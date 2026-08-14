@@ -1,0 +1,13 @@
+# Raw event logs — 111 MB, redownloadable from 4TU.ResearchData
+data/
+# Derived tables
+*.parquet
+*.duckdb
+output/
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# macOS
+.DS_Store
