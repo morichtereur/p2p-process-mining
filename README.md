@@ -33,6 +33,12 @@ process actually ran, and quantifying where cycle time and rework go.
 Each number below is reproducible from `data/*.parquet` with the script named
 next to it — nothing here is manually computed.
 
+This baseline feeds a downstream business case —
+[gbs-business-case](https://github.com/morichtereur/gbs-business-case) turns
+the touchless rate, rework penalty and touch counts measured here into a
+sized opportunity, NPV, and a Monte Carlo sensitivity analysis, kept
+strictly separate from what it has to assume on top.
+
 ## Data
 
 [BPI Challenge 2019](https://data.4tu.nl/articles/dataset/BPI_Challenge_2019/12715853/1)
@@ -412,6 +418,7 @@ Every date and activity in that paragraph traces to a cited, verified event
     src/variants.py             variant analysis (step 1)
     src/touchless.py            touchless rate (step 2)
     src/rework.py               rework cost (step 3)
+    src/rework_touches.py       touches per reworked case (feeds gbs-business-case)
     src/sequence_violations.py  sequence violations (step 4)
     src/explain_case.py         grounded narrative generation (step 5)
     src/eval_narratives.py      citation grounding eval (step 5)
