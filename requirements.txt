@@ -4,3 +4,4 @@ pyarrow
 pytz
 matplotlib
 networkx
+anthropic

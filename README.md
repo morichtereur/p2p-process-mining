@@ -23,6 +23,12 @@ process actually ran, and quantifying where cycle time and rework go.
   comparable cases. The one that isn't enforced, a PO existing before the
   vendor's invoice, is violated in **1.6%** of cases: small, but the cleanest
   true control gap found in the whole log.
+- LLM-generated case narratives, citation-checked against the raw event log
+  rather than trusted: **100% of 186 citations** across two models
+  (`claude-haiku-4-5`, `claude-sonnet-5`) traced to a real event. The
+  interesting split wasn't accuracy — it was cost: Sonnet 5 wrote 2.4x
+  longer narratives at 3.5x the price with no grounding advantage over
+  Haiku 4.5.
 
 Each number below is reproducible from `data/*.parquet` with the script named
 next to it — nothing here is manually computed.
@@ -76,14 +82,16 @@ tables — `data/cases.parquet` and `data/events.parquet`. Takes ~22s.
   database server, no loading step
 - **polars** — result handling and the couple of places a dataframe is more
   natural than another query
-- **matplotlib + networkx** — the four charts in `assets/`, including the
+- **matplotlib + networkx** — the five charts in `assets/`, including the
   directly-follows process map (`src/charts.py`)
+- **anthropic** — step 5's narrative generation, `claude-haiku-4-5` and
+  `claude-sonnet-5` via structured outputs (`src/explain_case.py`)
 
 ## Analysis
 
-Four scripts, each independent, each reading straight from the Parquet
-tables. Run in order or standalone — `src/charts.py` last, since it plots the
-other four's output.
+Six scripts, each independent, each reading straight from the Parquet
+tables. Run in order or standalone — `src/charts.py` late, since it plots
+steps 1-4's output; `src/eval_narratives.py` after `src/explain_case.py`.
 
 1. **Variant analysis** ✓ — the happy path against the long tail; what share of
    cases follow the designed process at all. `src/variants.py` →
@@ -97,6 +105,12 @@ other four's output.
 4. **Sequence violations** ✓ — invoice before goods receipt, PO raised after
    the invoice arrived (maverick buying), and their control implications.
    `src/sequence_violations.py` → `output/sequence_cases.parquet`. See
+   findings below.
+5. **Grounded narrative generation + eval** ✓ — LLM-written, plain-English
+   case narratives with structured citations back to the raw event log, and
+   a grounding eval that checks every citation against real events rather
+   than trusting the model. `src/explain_case.py` + `src/eval_narratives.py`
+   → `output/case_narratives.jsonl`, `output/narrative_eval.parquet`. See
    findings below.
 
 ### 1. Variant analysis — findings
@@ -314,6 +328,84 @@ rate from step 3, but it's the cleanest true control violation found across
 all four steps: uncontested, well-defined, and directly actionable (a hard
 block on invoice creation without a prior open PO would eliminate it).
 
+### 5. Grounded narrative generation + eval — findings
+
+Everything above is a number. This step asks a different question: can an
+LLM turn a case's raw event log into a plain-English narrative a controls
+report could use — and can that narrative's claims be checked, not just
+trusted?
+
+The eval design leans on something most LLM-grounding evals don't have: a
+**fully structured source**. Checking whether a citation into a PDF is
+faithful needs a human or a judge model, because the source is free text.
+Here the source is the exact event log this project already computed —
+so a citation is either a real `(activity, timestamp)` pair on that case,
+or it isn't. No judgment call required.
+
+**Setup:** 12 cases (4 touchless, 4 reworked, 4 maverick-buying — drawn
+from steps 2-4's own labeled sets), sent to two models —
+`claude-haiku-4-5` and `claude-sonnet-5` — with the same system prompt and
+`output_config.format` (structured outputs) forcing a JSON schema of
+`{narrative, citations: [{claim, activity, timestamp}]}`. Structured outputs
+guarantee syntactically valid JSON on both models, which is deliberate: it
+removes "did the model even produce parseable output" as a variable, so the
+eval measures grounding, not JSON luck.
+
+**What broke first, before any grounding question:** the first run crashed
+on a case with 120 events — `max_tokens=1024` cut the response off mid-JSON.
+One case in the sample (`2000000016_00001`) has 250 events, an extreme
+outlier even by this log's standards. Fixed by raising `max_tokens` to 4096;
+the real lesson is that a "small" narrative task can still need real output
+budget once the input scales with an outlier case, and structured outputs
+don't protect against truncation — they only guarantee the shape *if* the
+model finishes.
+
+**Grounding result:**
+
+| | |
+|---|---|
+| Citations checked | 186 |
+| Grounded (real event on that case) | 186 (**100.0%**) |
+| Parse failures | 0 |
+
+100% held across both models and all three categories, including the
+250-event outlier. That's a real result, not a rounding artifact of a small
+sample — but it's also a ceiling effect worth naming honestly: copying an
+exact string out of a provided context, under a JSON schema that forces the
+shape, is close to the easiest thing a current model can be asked to do.
+This eval demonstrates that structured-data grounding is solved for *this*
+task shape; it says nothing about harder claims (arithmetic over the log,
+comparisons across cases, causal explanation) that a stricter eval would
+need to probe separately.
+
+**Where the two models actually differ — cost and elaboration, not accuracy:**
+
+| Model | Cost (12 cases) | Avg. output | Grounding |
+|---|---|---|---|
+| `claude-haiku-4-5` | $0.0492 | 378 tokens | 100.0% |
+| `claude-sonnet-5` | $0.1731 | 892 tokens | 100.0% |
+
+Sonnet 5 writes noticeably longer, more detailed narratives (2.4x the output
+tokens) at 3.5x the cost — and zero grounding advantage on this task. For a
+"generate a checkable narrative" workload specifically, that's a real
+model-selection finding: Haiku 4.5 is the better default, and reaching for
+the larger model would be paying for elaboration, not for correctness.
+
+Example narrative (`claude-sonnet-5`, case `2000000005_00001`, a reworked
+case with a cancelled-and-redone invoice receipt):
+
+> The purchase order item was created and immediately approved and ordered
+> via SRM on 2018-01-08, with the vendor creating both an invoice and a
+> debit memo the same day. Goods were received on 2018-01-19, and a first
+> invoice receipt was recorded and cleared in April 2018. Several months
+> later, in August 2018, that invoice receipt was cancelled and a new
+> invoice receipt was recorded and cleared within minutes, closing out the
+> case.
+
+Every date and activity in that paragraph traces to a cited, verified event
+— `output/narrative_eval.parquet` has the full per-citation check for all
+24 narratives.
+
 ## Layout
 
     src/ingest.py               XES → Parquet
@@ -321,6 +413,8 @@ block on invoice creation without a prior open PO would eliminate it).
     src/touchless.py            touchless rate (step 2)
     src/rework.py               rework cost (step 3)
     src/sequence_violations.py  sequence violations (step 4)
+    src/explain_case.py         grounded narrative generation (step 5)
+    src/eval_narratives.py      citation grounding eval (step 5)
     src/charts.py               the four PNGs in assets/, from steps 1-4's output
     notebooks/                  exploratory analysis
     data/                       raw log + derived tables (gitignored)
